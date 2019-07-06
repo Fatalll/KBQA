@@ -1,35 +1,43 @@
 import codecs
+import re
+
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import parallel_bulk
 
-es = Elasticsearch([{'host': 'localhost', 'port': 9200, 'timeout': 60, 'maxsize': 25}])
+es = Elasticsearch([{'host': 'localhost', 'port': 9200, 'timeout': 360, 'maxsize': 25}])
+# index = "property_index"
+index = "entity_index"
 
 
 def next_key():
-    with codecs.open('labels.txt', 'r', "utf-8") as file:
+    with codecs.open('labels_new_v3_ms.txt', 'r', "utf-8") as file:
         last_key = None
         data = []
         ll = 0
         for line in file:
             record = line.split(':', 1)
-            if int(record[0][1:]) > ll + 10000:
-                ll = int(record[0][1:])
-                print(record[0])
+            try:
+                if int(record[0][1:]) > ll + 10000:
+                    ll = int(record[0][1:])
+                    print(record[0])
 
-            if record[0] == last_key:
-                data.append(record[1].lower())
-            else:
-                if len(data) > 0:
-                    es_dict = {'id': last_key, 'labels': data}
-                    op_dict = {
-                        "_index": 'entity_index',
-                        "_id": last_key,
-                        "_source": es_dict
-                    }
-                    yield op_dict
+                if record[0] == last_key:
+                    data.append(re.sub('[{}:?!,-_/.\"+()«»\\\\]', '', record[1].lower().rstrip()))
+                else:
+                    if len(data) > 0:
+                        es_dict = {'id': last_key, 'labels': data}
+                        op_dict = {
+                            "_index": index,
+                            "_id": last_key,
+                            "_source": es_dict
+                        }
+                        yield op_dict
 
-                last_key = record[0]
-                data = [record[1].lower()]
+                    last_key = record[0]
+                    data = [re.sub('[{}:?!,-_/.\"+()«»\\\\]', '', record[1].lower().rstrip())]
+            except Exception as e:
+                print(record)
+                print(str(e))
 
 
 if __name__ == '__main__':
@@ -43,13 +51,9 @@ if __name__ == '__main__':
                 "labels": {
                     "type": "text",
                     "fields": {
-                        "ngram": {
+                        "shingle": {
                             "type": "text",
-                            "analyzer": "entity_analyzer"
-                        },
-                        "keywords": {
-                            "type": "text",
-                            "analyzer": "keywords_analyzer"
+                            "analyzer": "shingle_analyzer"
                         }
                     }
                 }
@@ -58,32 +62,28 @@ if __name__ == '__main__':
         "settings": {
             "analysis": {
                 "analyzer": {
-                    "entity_analyzer": {
-                        "tokenizer": "entity_tokenizer"
-                    },
-                    "keywords_analyzer": {
-                        "tokenizer": "keyword"
+                    "shingle_analyzer": {
+                        "tokenizer": "standard",
+                        "filter": [
+                            "custom_shingle"
+                        ]
                     }
                 },
-                "tokenizer": {
-                    "entity_tokenizer": {
-                        "type": "ngram",
-                        "min_gram": 3,
-                        "max_gram": 3,
-                        "token_chars": [
-                            "letter",
-                            "digit"
-                        ]
+                "filter": {
+                    "custom_shingle": {
+                        "type": "shingle",
+                        "min_shingle_size": "2",
+                        "max_shingle_size": "3"
                     }
                 }
             }
         }
     }
 
-    es.indices.delete(index='entity_index')
-    es.indices.create(index='entity_index', body=settings)
+    es.indices.delete(index=index)
+    es.indices.create(index=index, body=settings)
 
-    for ok, result in parallel_bulk(es, next_key()):
+    for ok, result in parallel_bulk(es, next_key(), queue_size=8, thread_count=8, chunk_size=1000):
         if not ok:
             print(result)
 
